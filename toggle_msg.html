@@ -1,0 +1,188 @@
+<script type="text/javascript">
+    var toggle_msg_observations = [];
+    var toggle_msg_observer = null;
+  
+    RED.nodes.registerType('toggle-msg', {
+        category: 'aaaa',
+        color: '#a6bbcf',
+        defaults: {
+            initialMode: {value: 'passing'},
+            name: {value: ''},
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: "filter.png",
+        align: 'right',
+        paletteLabel : "Msg toggle",
+        label: function() { return this.name || "Msg toggle"; }
+    });
+    
+    // When the mode is updated, the checkbox layout should be changed and the Node-RED server should be notified.
+    function updateMode(toggleMsgElement, newMode) {
+        var newVisibility;
+        
+        toggleMsgElement.setAttributeNS(null, "data-mode", newMode);
+        
+        var polygon = toggleMsgElement.getElementsByTagName("polyline")[0];
+        
+        // Change the layout of the checkbox (i.e. checked or unchecked) by hiding or showing the polyline for the 'V'
+        switch (newMode) {
+            case 'passing':
+                newVisibility = 'visible';
+                break;
+            case 'blocking':
+                newVisibility = 'hidden';
+        }
+
+        polygon.setAttributeNS(null, 'visibility', newVisibility);
+    }
+  
+    // As soon as the Msg-Toggle is added to the flow editor SVG, we need to add a checkbox to it.
+    // However when Node-RED triggers a 'nodes:add' event, the node hasn't been added to the SVG yet.
+    // Therefore I used following workaround:
+    // 1. At the 'nodes:add' event, the node id of the Msg-Toggle node is added to a global array (toggle_msg_observations).
+    // 2. One single DOM observer is created
+    // 3. At a DOM change, all node id's in the array will be handled (i.e. a checkbox will be added in the SVG)
+    // 4. The node id will be removed from the array.
+    // The DOM observer is not very efficient, but I don't know a better way at the moment ...
+    RED.events.on("nodes:add", function(newNode) {
+        // Register the id of the new Msg-Toggle node in the global array
+        if (newNode.type === "toggle-msg") {
+            toggle_msg_observations.push(newNode.id);
+         }
+        
+        // Create a single DOM observer
+        if (!toggle_msg_observer) {          
+            // When the user clicks on the checkbox, the checkbox layout should be changed and the server should be notified.
+            function checkboxClicked(event) {
+                var newMode;
+                
+                // User can have clicked either the rectangle or the polygon, since the checkbox consists out of
+                // those two elements.  Let's get the parent element (i.e. the entire checkbox) ...
+                var toggleMsgElement = event.target.parentNode;
+                
+                var toggleMsgNodeId = toggleMsgElement.id; 
+                
+                // The toggleMode is stored as a custom html data attribute
+                var mode = toggleMsgElement.getAttributeNS(null, 'data-mode');
+                
+                // Toggle the current mode
+                switch (mode) {
+                    case 'passing':
+                        newMode = 'blocking';
+                        break;
+                    case 'blocking':
+                        newMode = 'passing';
+                        break;
+                }
+                
+                // Send the new toggleMode to the server-side Node-RED flow
+                $.get('/toggle-msg/set/' + toggleMsgElement.id + '/' + newMode)
+                .done(function(data, textStatus, jqxhr) {
+                    // As soon as the server is up-to-date, update the checkbox in the client visually
+                    updateMode(toggleMsgElement, newMode);
+                })
+                .fail(function(jqxhr, settings, exception ){
+                    console.error("Could not send the mode of checkbox (with id " + toggleMsgNodeId + ")");
+                })
+            }
+
+            function handleDomChanges(mutations) {
+                const svgns = "http://www.w3.org/2000/svg";
+                
+                // We will arrive here when the Node-RED editor is changed (i.e. after a deploy).
+                // We will arrive here a couple of times, but only the first time we will do something.
+                // Indeed from the second time on, the toggle_msg_observations array will be empty , since 
+                // we delete all Toggle-Msg node ids that have gotten a checkbox ...
+                 
+                // Show a checkbox on every new Msg-Toggle node
+                for(var i = toggle_msg_observations.length -1; i >= 0 ; i--) {
+                    var toggleMsgNodeId = toggle_msg_observations[i]; 
+                    var toggleMsgElement = document.getElementById(toggleMsgNodeId);
+                    
+                    if (toggleMsgElement) {
+                        // Since it is not obvious to insert html input elements in an SVG drawing, we will draw
+                        // the checkbox manually by two SVG elements (a rectangle and a polygon)
+                        var rectangle = document.createElementNS(svgns, 'rect');
+                        rectangle.setAttributeNS(null, 'x', '8');
+                        rectangle.setAttributeNS(null, 'y', '5');
+                        rectangle.setAttributeNS(null, 'rx', '5');
+                        rectangle.setAttributeNS(null, 'ry', '5');
+                        rectangle.setAttributeNS(null, 'fill', '#FFFFFF');
+                        rectangle.setAttributeNS(null, 'stroke', '#00ABBB');
+                        rectangle.setAttributeNS(null, 'stroke-width', '1');
+                        rectangle.setAttributeNS(null, 'width', '20');
+                        rectangle.setAttributeNS(null, 'height', '20');
+                        rectangle.setAttributeNS(null, 'cursor', 'pointer');
+                        rectangle.addEventListener("click", checkboxClicked);
+
+                        var polyline = document.createElementNS(svgns, 'polyline');
+                        polyline.setAttributeNS(null, 'points', '13,15 18,20 24,10');
+                        polyline.setAttributeNS(null, 'y', '2');
+                        polyline.setAttributeNS(null, 'stroke', '#00ABBB');
+                        polyline.setAttributeNS(null, 'stroke-width', '3');
+                        polyline.setAttributeNS(null, 'fill-opacity', '0.0'); // Transparent
+                        polyline.setAttributeNS(null, 'cursor', 'pointer');
+                        polyline.addEventListener("click", checkboxClicked);
+
+                        toggleMsgElement.appendChild(rectangle);   
+                        toggleMsgElement.appendChild(polyline);
+
+                        // When a new Msg-Toggle node is added to the SVG, we have to get the current mode from the server.
+                        // Indeed since we don't need deploys to update the server toggle mode, we will need to get the current mode from the server ...
+                        $.getJSON('/toggle-msg/get/' + toggleMsgElement.id)
+                        .done(function(data, textStatus, jqxhr) {
+                            // As soon as the server has send the current mode, update the checkbox in the client visually
+                            updateMode(toggleMsgElement, data.mode);
+                        })
+                        .fail(function(jqxhr, settings, exception ){
+                            console.error("Could not create a checkbox for toggle-msg node (with id " + toggleMsgNodeId + ")");
+                        })
+                    
+                        // Remove the Toggle-Msg node id from the array, to avoid it gets the next mutation handling again a new checkbox
+                        toggle_msg_observations.splice(i, 1);                        
+                    }
+                }
+            }
+            
+            // We will observe the entire SVG from the flow editor screen
+            const observerTarget = document.querySelector('svg');
+
+            // Specify that we only want to observe DOM elements being added.
+            // TODO this could perhaps be optimized, to arrive less in the DOM observer handler ...
+            const observerConfig = {
+                childList: true,    // Observe mutations to the target node’s children
+                subtree: true       // Observe mutations to ALL descendants of the target
+            };
+            
+            // Start listening to DOM changes
+            MutationObserver = window.MutationObserver || window.WebKitMutationObserver;
+            toggle_msg_observer = new MutationObserver(handleDomChanges);
+            toggle_msg_observer.observe(observerTarget, observerConfig);
+        }
+    })
+
+    // When the Msg-Toggle mode is updated on the server-side, we will be notified about the new mode value.
+    // Indeed the mode could have been updated from another Node-RED flow editor meanwhile ...
+    RED.comms.subscribe('toggle_msg_mode', function(event, data) {
+        var toggleMsgElement = document.getElementById(data.id);
+        
+        if (toggleMsgElement) {
+            updateMode(toggleMsgElement, data.mode);
+        }
+    })
+</script>
+
+<script type="text/x-red" data-template-name="toggle-msg">
+    <div class="form-row">
+        <label for="node-input-initialMode"><i class="fa fa-filter"></i> Initial</label>
+        <select id="node-input-initialMode">
+            <option value="passing">Passing</option>
+            <option value="blocking">Blocking</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+</script>
